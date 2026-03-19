@@ -77,10 +77,12 @@ type MediaChannel struct {
 - `OpenMediaChannel(wsURL string) (*MediaChannel, error)` — create connection, start read loop
 - `SendCommand(method string, params map[string]interface{}) (json.RawMessage, error)` — 5s timeout
 - `SendCommandWithTimeout(method, params, timeout)` — configurable timeout
-- `CaptureScreenshotAsync(recorder, context, opts, actionEnd)` — fire goroutine, increment `inflightWg`, capture on media channel, decode, call `recorder.AddScreenshot()`
+- `CaptureScreenshotAsync(recorder, context, opts, actionEnd)` — fire goroutine, increment `inflightWg`, capture on media channel, decode, call `recorder.AddScreenshot()`. When capture loop is running, picks nearest frame from ring buffer instead.
 - `CaptureSnapshotAsync(recorder, callId, snapshotType, context, frameURL, opts)` — same pattern for DOM frame-snapshots
+- `StartCaptureLoop(pageID, interval, format, quality)` — start continuous polling loop, feed ring buffer and optional stream/recorder
+- `StopCaptureLoop()` — stop the polling loop
 - `Drain()` — `inflightWg.Wait()`, blocks until all in-flight screenshots complete
-- `Close()` — close `stopChan`, then close the WebSocket connection
+- `Close()` — stop capture loop, close `stopChan`, then close the WebSocket connection
 
 ### Lifecycle
 
@@ -96,10 +98,11 @@ type MediaChannel struct {
 | Aspect | Before | After |
 |--------|--------|-------|
 | Screenshot channel | Main BiDi connection | Dedicated media channel |
-| Blocking | `CaptureRecordingScreenshot` blocks dispatch | `CaptureScreenshotAsync` returns immediately |
+| Blocking | `CaptureRecordingScreenshot` blocks dispatch | `CaptureScreenshotAsync` returns immediately (or picks from ring buffer if capture loop is running) |
 | `screenshotInFlight` | Atomic to prevent overlapping captures | Removed (media channel handles concurrency) |
 | `dispatchMu` hold time | Includes screenshot wait | Releases after handler + fire-and-forget |
 | `afterSnapshot` in RecordActionEnd | Synchronous snapshot name | Empty string (snapshot added async) |
+| Frame source | One capture per action | Ring buffer nearest-match (when capture loop active) or async capture (Phase 1 without streaming) |
 
 #### Before-snapshots
 
@@ -107,8 +110,8 @@ Keep before-snapshots on the main channel synchronously for the initial implemen
 
 ### Recording start/stop integration
 
-- `handleRecordingStart`: if `opts.Screenshots || opts.Snapshots` and `wsURL != ""`, call `OpenMediaChannel(wsURL)`, store on session
-- `handleRecordingStop`: `mc.Drain()` (wait for in-flight screenshots), `recorder.Stop()` (build zip), `mc.Close()`
+- `handleRecordingStart`: if `opts.Screenshots || opts.Snapshots` and `wsURL != ""`, call `OpenMediaChannel(wsURL)`, store on session. If streaming is active, the capture loop is already running — just hook the recorder into it. If `opts.AllFrames`, register the recorder to receive every frame from the loop.
+- `handleRecordingStop`: `mc.Drain()` (wait for in-flight screenshots), `recorder.Stop()` (build zip). If no stream viewers remain, `mc.Close()`. Otherwise, unhook the recorder but keep the capture loop running for viewers.
 - `closeSession`: close media channel if session torn down mid-recording
 
 ### Agent/MCP path integration
@@ -139,9 +142,57 @@ Media channel response:
 {"id":2000001,"type":"success","result":{"data":"<base64 JPEG>"}}
 ```
 
+### Frame retention modes
+
+Three tiers of frame retention, controlled by recording options:
+
+```json
+recording.start({
+  "screenshots": true,
+  "allFrames": false,
+  "video": null
+})
+```
+
+| Option | Default | Behavior |
+|--------|---------|----------|
+| `screenshots: true` | — | Enable screenshot capture on the media channel |
+| `allFrames: false` | `false` | **Action-only**: one frame per action, cherry-picked from ring buffer by nearest timestamp. Small zip, same density as today. |
+| `allFrames: true` | — | **All frames**: every capture-loop frame goes into the zip as a `screencast-frame` event. Smooth filmstrip scrubbing in Record Player. |
+| `video: "path.mp4"` | `null` | **Video export** (Phase 3): encode frames to MP4/WebM file as they arrive. Useful for CI reports, bug reports, sharing. |
+
+#### Action-only (default)
+
+`dispatch()` calls `ringBuffer.Nearest(endTime)` → feeds one frame to `recorder.AddScreenshot()`. Capture loop keeps running for streaming viewers (if any) but frames not sent to the recorder are discarded from the ring buffer as it wraps.
+
+Zip size: ~1 frame per action × 50KB ≈ a few hundred KB for a typical test.
+
+#### All frames
+
+The capture loop feeds **every frame** to `recorder.AddScreenshot()` in addition to broadcasting to stream viewers. The ring buffer still exists for `Nearest()` lookups but every frame also goes to the recorder.
+
+Zip size: 300 frames × 50KB = ~15MB for a 30s recording at 10fps. Acceptable. Quality and interval are tunable.
+
+When streaming is also active, the capture loop serves double duty — frames go to both the recorder and connected stream viewers.
+
+#### Video export (Phase 3)
+
+A `VideoEncoder` goroutine consumes frames from the capture loop and writes to an MP4/WebM file using ffmpeg (shelled out) or a Go encoding library. Runs alongside the recorder — the zip still gets `screencast-frame` events, and the video file is written separately.
+
+```go
+type VideoEncoder struct {
+    cmd    *exec.Cmd   // ffmpeg process
+    stdin  io.WriteCloser
+    format string      // "mp4" or "webm"
+    fps    int
+}
+```
+
+Activated by `recording.start({ video: "output.mp4" })` or `vibium record --video output.mp4`. The encoder receives raw JPEG frames and pipes them to ffmpeg's stdin as a MJPEG stream. ffmpeg handles the rest (re-encoding, muxing, container format).
+
 ### Memory considerations
 
-At 100ms capture interval with 50KB JPEG frames over a 30s recording: 300 frames × 50KB = ~15MB. Acceptable. Quality and interval are tunable via recording options.
+Ring buffer holds the last N frames (default 30 = ~3s at 10fps). At 50KB per frame, that's ~1.5MB. The buffer wraps — old frames are overwritten, not accumulated. Only `allFrames` mode accumulates frames in the recorder's resource map.
 
 ## Part 2: Live Streaming (Phase 2)
 
@@ -161,19 +212,41 @@ When set, vibium starts a WebSocket server on the given port. Clients connect to
 
 The streaming server uses the media channel's second BiDi connection. If recording is also active, both share the same media channel — the capture loop serves double duty, feeding frames to both the recorder and connected stream viewers.
 
-### Capture loop
+### Capture loop and ring buffer
 
-Since BiDi has no native push-based screencast, the media channel runs a **polling loop**:
+Since BiDi has no native push-based screencast, the media channel runs a **polling loop** that feeds a **ring buffer**:
 
 ```
-every <interval>:
+capture loop (every <interval>):
     browsingContext.captureScreenshot on media channel
     → decode base64
-    → broadcast to connected stream viewers
-    → if recording, also feed to recorder
+    → store in ring buffer (last N frames, each tagged with timestamp)
+    → broadcast to connected stream viewers (every frame)
+    → if allFrames recording, also feed every frame to recorder.AddScreenshot()
 ```
 
 Default interval: 100ms (~10 fps). Configurable via streaming options. The loop runs on the media channel's second BiDi connection, so it never blocks automation commands on the main channel.
+
+When `dispatch()` completes an action, it grabs the **nearest frame by timestamp** from the ring buffer and feeds it to the recorder. No new capture request needed — the frame is already there.
+
+```go
+type FrameBuffer struct {
+    mu     sync.RWMutex
+    frames []*CapturedFrame // circular buffer
+    size   int              // max frames to keep (e.g. 30 = ~3s at 10fps)
+    head   int              // write position
+}
+
+type CapturedFrame struct {
+    Data      []byte
+    Width     int
+    Height    int
+    PageID    string
+    Timestamp time.Time
+}
+```
+
+`FrameBuffer.Nearest(ts time.Time) *CapturedFrame` returns the frame closest to the given timestamp. Used by `dispatch()` to pick the right frame for a completed action without issuing a new capture.
 
 ### WebSocket protocol: server → client
 
@@ -401,7 +474,7 @@ await page.find("button").click();
 
 | File | Changes |
 |------|---------|
-| `clicker/internal/api/media.go` | **New file.** MediaChannel struct, OpenMediaChannel, readLoop, SendCommand, CaptureScreenshotAsync, CaptureSnapshotAsync, Drain, Close |
+| `clicker/internal/api/media.go` | **New file.** MediaChannel struct, OpenMediaChannel, readLoop, SendCommand, CaptureScreenshotAsync, StartCaptureLoop, StopCaptureLoop, FrameBuffer, Drain, Close |
 | `clicker/internal/api/router.go` | Add `mediaChannel` and `wsURL` to BrowserSession. Set `wsURL` in OnClientConnect. Close in closeSession. Modify dispatch() for async screenshots |
 | `clicker/internal/api/handlers_recording.go` | Open media channel in handleRecordingStart. Drain + close in handleRecordingStop and handleRecordingStopChunk |
 | `clicker/internal/agent/handlers.go` | Add `mediaChannel` to Handlers. Open in browserRecordStart, drain+close in browserRecordStop. Async screenshots in Call(). Add getWSURL() helper |
@@ -411,11 +484,18 @@ await page.find("button").click();
 | File | Changes |
 |------|---------|
 | `clicker/internal/api/stream.go` | **New file.** StreamServer struct, WebSocket server, capture loop, input relay |
-| `clicker/internal/api/media.go` | Add `StartCaptureLoop`, `StopCaptureLoop` for continuous polling |
 | `clicker/internal/api/router.go` | Start stream server if `streamPort` is set |
 | `clicker/cmd/clicker/main.go` | Add `--stream-port` flag, read `VIBIUM_STREAM_PORT` env |
 | `clients/javascript/src/clicker/browser.ts` | Add `streamPort` option to `browser.start()` |
 | `clients/python/src/vibium/browser.py` | Add `stream_port` option to `browser.start()` |
+
+### Phase 3 (video export)
+
+| File | Changes |
+|------|---------|
+| `clicker/internal/api/video.go` | **New file.** VideoEncoder struct, ffmpeg pipe, Start/Stop/WriteFrame |
+| `clicker/internal/api/handlers_recording.go` | Start video encoder in handleRecordingStart if `opts.Video` set. Stop + finalize in handleRecordingStop |
+| `clicker/internal/api/recording.go` | Add `Video string` and `AllFrames bool` to `RecordingStartOptions` |
 
 ## Verification
 
@@ -439,6 +519,13 @@ await page.find("button").click();
 6. **Recording + streaming**: enable both simultaneously, verify zip has frames and stream viewers get live output
 7. **Cleanup**: stop daemon, verify WebSocket server shuts down and all goroutines exit
 
+### Phase 3
+
+1. **allFrames zip**: enable `allFrames: true`, run saucedemo E2E, verify zip has ~300 `screencast-frame` events (not just ~20 action frames)
+2. **Video output**: `recording.start({ video: "out.mp4" })`, verify MP4 file is written, playable, correct duration
+3. **Video + recording**: both zip and MP4 produced simultaneously
+4. **ffmpeg missing**: graceful error if ffmpeg not installed when `video` option is used
+
 ## Use cases
 
 - **Pair browsing** — human watches and assists AI agent in real-time
@@ -446,4 +533,6 @@ await page.find("button").click();
 - **Screen sharing** — share what the agent sees with teammates
 - **Manual intervention** — human takes over when the agent gets stuck, then hands back control
 - **Mobile testing** — inject touch events for mobile emulation testing
-- **Recording filmstrip** — denser frame captures for smoother playback in Record Player
+- **Recording filmstrip** — `allFrames: true` for smoother playback in Record Player
+- **Video export** — `video: "test.mp4"` for CI reports, bug reports, demos
+- **Combined** — record zip (for Record Player) + video (for sharing) + stream (for live viewing) all at once
