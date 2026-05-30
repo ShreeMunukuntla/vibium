@@ -38,12 +38,21 @@ ifdef V
   override VERSION := $(V)
 endif
 
-# Per-group test timeout in seconds (override: make test TEST_TIMEOUT=600)
-TEST_TIMEOUT ?= 300
+# Per-group test timeout in seconds (override: make test TEST_TIMEOUT=300).
+# This is the outer wrapper for a whole phase (test-cli, test-js, etc.) and
+# only fires when something has gone catastrophically wrong. A healthy
+# sequential test-js phase is ~6-10 minutes because Chrome launch is ~16s
+# per file on macOS (see clients/javascript/src/clicker/process.ts). For
+# faster iteration use JS_PARALLEL=4 (Makefile:189) which cuts wall time ~3x.
+TEST_TIMEOUT ?= 600
 TIMEOUT_CMD := node scripts/timeout.mjs $(TEST_TIMEOUT)
 
-# Node test runner flags: 60s per-test timeout + force exit on dangling handles
-TEST_FLAGS := --test-timeout=60000 --test-force-exit
+# Node test runner flags: per-test timeout + force exit on dangling handles.
+# The slowest healthy test today is ~20s (websocket "monitoring survives
+# page navigation"). 30s gives headroom while making a hung test surface
+# in 30s instead of 2 minutes — so a flake takes ~30s × N_stuck_tests to
+# trip the phase wrapper instead of ~120s × N.
+TEST_FLAGS := --test-timeout=30000 --test-force-exit
 
 # Default target
 all: build
@@ -176,10 +185,17 @@ test-cli: build-go
 	@echo "--- CLI Process Tests (sequential) ---"
 	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=1 tests/cli/process.test.js
 
-# Run JS library tests (3 consolidated groups with parallel execution)
+# Run JS library tests
+# Each test file owns its own browser (top-level before/after), so files are
+# independent and safe to run in parallel. JS_PARALLEL controls the fan-out
+# (override: make test-js JS_PARALLEL=4). Measured ~3x speedup at 4 vs 1,
+# but parallel runs have produced intermittent hangs on shared resources, so
+# the default stays at 1 until we root-cause. Process tests stay sequential
+# because they assert on Chrome process lifecycle.
+JS_PARALLEL ?= 1
 test-js: build-go
-	@echo "--- JS Async Tests ---"
-	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=1 \
+	@echo "--- JS Async Tests (parallel x$(JS_PARALLEL)) ---"
+	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=$(JS_PARALLEL) \
 		tests/js/async/async-api.test.js \
 		tests/js/async/auto-wait.test.js \
 		tests/js/async/browser-modes.test.js \
@@ -188,14 +204,14 @@ test-js: build-go
 		tests/js/async/state.test.js \
 		tests/js/async/input-eval.test.js \
 		tests/js/async/network-dialog.test.js \
-		tests/js/async/websocket.test.js \
 		tests/js/async/console-error.test.js \
-		tests/js/async/download-file.test.js \
-		tests/js/async/recording.test.js \
 		tests/js/async/clock.test.js \
 		tests/js/async/emulation.test.js \
 		tests/js/async/a11y.test.js \
 		tests/js/async/a11y-tree-tutorial.test.js \
+		tests/js/async/websocket.test.js \
+		tests/js/async/download-file.test.js \
+		tests/js/async/recording.test.js \
 		tests/js/async/downloads-tutorial.test.js \
 		tests/js/async/cookies.test.js \
 		tests/js/async/storage.test.js \
@@ -203,8 +219,8 @@ test-js: build-go
 		tests/js/async/object-model.test.js \
 		tests/js/async/navigation.test.js \
 		tests/js/async/lifecycle.test.js
-	@echo "--- JS Sync Tests ---"
-	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=1 \
+	@echo "--- JS Sync Tests (parallel x$(JS_PARALLEL)) ---"
+	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=$(JS_PARALLEL) \
 		tests/js/sync/sync-api.test.js \
 		tests/js/sync/network-events.test.js \
 		tests/js/sync/websocket-sync.test.js \

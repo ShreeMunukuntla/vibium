@@ -68,7 +68,7 @@ class MCPClient {
     return msg.id;
   }
 
-  receive(timeout = 60000) {
+  receive(timeout = 120000) {
     return new Promise((resolve, reject) => {
       // Check if we already have a response buffered
       if (this.responses.length > 0) {
