@@ -13,6 +13,11 @@ from typing import Optional
 
 from .errors import VibiumNotFoundError, BrowserCrashedError
 
+# Max size of a single newline-delimited stdout message the client will read.
+# asyncio's StreamReader defaults to 64 KiB, which a base64 screenshot can blow
+# past, raising LimitOverrunError and killing the receiver loop (issue #110).
+_STREAM_LIMIT = 256 * 1024 * 1024  # 256 MiB
+
 
 def get_platform_package_name() -> str:
     """Get the platform-specific package name."""
@@ -191,6 +196,11 @@ class VibiumProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=(sys.platform != "win32"),
+            # Raise the StreamReader buffer well above asyncio's 64 KiB default:
+            # a single newline-delimited message (e.g. a base64 screenshot) can be
+            # several MB, and readline() raises LimitOverrunError past the limit,
+            # killing the receiver loop (issue #110).
+            limit=_STREAM_LIMIT,
         )
 
         # Read lines from stdout until we get the vibium:lifecycle.ready signal.
