@@ -357,6 +357,9 @@ func (r *Router) OnClientMessage(client ClientTransport, msg string) {
 	case "vibium:element.dispatchEvent":
 		r.dispatch(session, cmd, r.handleVibiumDispatchEvent)
 		return
+	case "vibium:element.highlight":
+		r.dispatch(session, cmd, r.handleVibiumElHighlight)
+		return
 
 	// Element finding commands (element-scoped and page-level)
 	case "vibium:element.find", "vibium:page.find":

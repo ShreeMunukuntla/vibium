@@ -25,6 +25,36 @@ func (r *Router) handleVibiumElText(session *BrowserSession, cmd bidiCommand) {
 	r.sendSuccess(session, cmd.ID, map[string]interface{}{"text": val})
 }
 
+// handleVibiumElHighlight handles vibium:element.highlight — briefly outlines an
+// element so a human watching the browser can see which element was targeted.
+func (r *Router) handleVibiumElHighlight(session *BrowserSession, cmd bidiCommand) {
+	ep := ExtractElementParams(cmd.Params)
+	context, err := r.resolveContext(session, cmd.Params)
+	if err != nil {
+		r.sendError(session, cmd.ID, err)
+		return
+	}
+
+	script, args := buildElStateScript(ep, `(() => {
+		const prevOutline = el.style.outline;
+		const prevOffset = el.style.outlineOffset;
+		el.style.outline = '2px solid #ff2d95';
+		el.style.outlineOffset = '1px';
+		setTimeout(() => { el.style.outline = prevOutline; el.style.outlineOffset = prevOffset; }, 2000);
+		return 'ok';
+	})()`)
+	val, err := r.evalElementScript(session, context, script, args)
+	if err != nil {
+		r.sendError(session, cmd.ID, err)
+		return
+	}
+	if val != "ok" {
+		r.sendError(session, cmd.ID, fmt.Errorf("highlight: %s", val))
+		return
+	}
+	r.sendSuccess(session, cmd.ID, map[string]interface{}{"highlighted": true})
+}
+
 // handleVibiumElInnerText handles vibium:element.innerText — returns element.innerText.
 func (r *Router) handleVibiumElInnerText(session *BrowserSession, cmd bidiCommand) {
 	ep := ExtractElementParams(cmd.Params)
