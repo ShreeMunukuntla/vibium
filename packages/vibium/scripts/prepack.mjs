@@ -37,9 +37,13 @@ const REQUIRED = [
   "worker.js",
 ];
 
+// Log progress to stderr: npm reserves stdout for machine-readable output such
+// as `npm pack --json`, so anything we print to stdout would corrupt it.
 function buildClient() {
-  console.log("[prepack] Building JS client in clients/javascript ...");
-  execFileSync("npm", ["run", "build"], { cwd: clientDir, stdio: "inherit" });
+  console.error("[prepack] Building JS client in clients/javascript ...");
+  // Send the child's stdout to our stderr (fd 2) so build logs don't pollute
+  // stdout either.
+  execFileSync("npm", ["run", "build"], { cwd: clientDir, stdio: ["ignore", 2, 2] });
 }
 
 function copyDist() {
@@ -47,7 +51,7 @@ function copyDist() {
   for (const entry of readdirSync(clientDist)) {
     cpSync(join(clientDist, entry), join(distDir, entry), { recursive: true });
   }
-  console.log("[prepack] Copied clients/javascript/dist -> packages/vibium/dist");
+  console.error("[prepack] Copied clients/javascript/dist -> packages/vibium/dist");
 }
 
 if (existsSync(clientDir)) {
@@ -55,7 +59,7 @@ if (existsSync(clientDir)) {
   buildClient();
   copyDist();
 } else {
-  console.log("[prepack] Monorepo client source not found; using existing dist/.");
+  console.error("[prepack] Monorepo client source not found; using existing dist/.");
 }
 
 const missing = REQUIRED.filter((f) => !existsSync(join(distDir, f)));
@@ -68,4 +72,4 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-console.log(`[prepack] Verified ${REQUIRED.length} required dist files. OK.`);
+console.error(`[prepack] Verified ${REQUIRED.length} required dist files. OK.`);

@@ -179,7 +179,7 @@ test-cleanup:
 # Process tests run separately with --test-concurrency=1 to avoid interference
 test-cli: build-go
 	@echo "--- CLI Tests (no daemon) ---"
-	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=1 tests/cli/is-installed.test.js
+	$(TIMEOUT_CMD) node --test $(TEST_FLAGS) --test-concurrency=1 tests/cli/is-installed.test.js tests/cli/packaging.test.js
 	@echo "--- CLI Tests ---"
 	@$(CURDIR)/clicker/bin/vibium$(EXE) daemon stop 2>/dev/null || true
 	@$(CURDIR)/clicker/bin/vibium$(EXE) daemon start --headless
