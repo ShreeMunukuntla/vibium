@@ -184,10 +184,14 @@ This returns a deployment ID. Save it, then check the status:
 ```bash
 DEPLOYMENT_ID="<id-from-upload-response>"
 
-curl -s \
+curl -s -X POST \
   "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" \
   -H "Authorization: Bearer $(echo -n "$SONATYPE_USER:$SONATYPE_PASS" | base64)"
 ```
+
+> **Use `-X POST`** — the status endpoint is a POST (like upload and publish).
+> A `GET` returns a generic `{"httpStatus":500,...,"errorCode":10500}`. An empty
+> `$DEPLOYMENT_ID` produces the same 500, so confirm it's set (`echo "$DEPLOYMENT_ID"`).
 
 Once validation passes, publish it:
 
