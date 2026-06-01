@@ -21,11 +21,17 @@ describe('Packaging: npm tarball contents', () => {
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'vibium-pack-'));
     // `npm pack --json` writes machine-readable output to stdout; the prepack
     // build logs go to stderr (see scripts/prepack.mjs).
-    const out = execFileSync(NPM, ['pack', '--json', '--pack-destination', dest], {
+    // On Windows we must spawn via the shell (Node blocks .cmd otherwise), but
+    // the shell doesn't auto-quote args — so quote the destination ourselves in
+    // case the temp path contains a space (e.g. a username with a space). On
+    // POSIX there's no shell, so the path is passed literally.
+    const useShell = process.platform === 'win32';
+    const destArg = useShell ? `"${dest}"` : dest;
+    const out = execFileSync(NPM, ['pack', '--json', '--pack-destination', destArg], {
       cwd: PKG_DIR,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'inherit'],
-      shell: process.platform === 'win32',
+      shell: useShell,
     });
 
     try {
