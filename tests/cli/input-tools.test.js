@@ -41,3 +41,16 @@ describe('CLI: Input Tools', () => {
     assert.match(result, /SKILL\.md/, 'Should mention SKILL.md');
   });
 });
+
+describe('CLI: Negative value flag parsing (B14, B18, B22)', () => {
+  test('sleep rejects negative value with meaningful error, not flag parse error', () => {
+    try {
+      execSync(`${VIBIUM} sleep -1`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+      assert.fail('Should have thrown');
+    } catch (err) {
+      const output = err.stderr + err.stdout;
+      assert.doesNotMatch(output, /unknown shorthand flag/, 'Should not treat -1 as a flag');
+      assert.match(output, /positive|invalid/, 'Should give a meaningful error');
+    }
+  });
+});
