@@ -66,9 +66,9 @@ func (c *Client) Evaluate(context, expression string) (interface{}, error) {
 	}
 
 	params := map[string]interface{}{
-		"expression":    expression,
-		"target":        map[string]interface{}{"context": context},
-		"awaitPromise":  true,
+		"expression":      expression,
+		"target":          map[string]interface{}{"context": context},
+		"awaitPromise":    true,
 		"resultOwnership": "none",
 	}
 
@@ -96,7 +96,7 @@ func (c *Client) Evaluate(context, expression string) (interface{}, error) {
 		return nil, fmt.Errorf("failed to parse remote value: %w", err)
 	}
 
-	return remoteValue.Value, nil
+	return convertRemoteValue(remoteValue), nil
 }
 
 // CallFunction calls a JavaScript function with arguments.
@@ -152,7 +152,7 @@ func (c *Client) CallFunction(context, functionDeclaration string, args []interf
 		return nil, fmt.Errorf("failed to parse remote value: %w", err)
 	}
 
-	return remoteValue.Value, nil
+	return convertRemoteValue(remoteValue), nil
 }
 
 // serializeValue converts a Go value to a BiDi serialized value.
@@ -171,3 +171,58 @@ func serializeValue(v interface{}) map[string]interface{} {
 		return map[string]interface{}{"type": "string", "value": fmt.Sprintf("%v", val)}
 	}
 }
+
+// convertRemoteValue recursively converts a BiDi RemoteValue into a plain Go
+// value suitable for JSON serialization. Primitives pass through unchanged;
+// arrays and objects are reconstructed by converting each child element.
+func convertRemoteValue(rv RemoteValue) interface{} {
+	switch rv.Type {
+	case "string", "number", "boolean":
+		return rv.Value
+	case "null", "undefined":
+		return nil
+	case "array":
+		items, ok := rv.Value.([]interface{})
+		if !ok {
+			return rv.Value
+		}
+		result := make([]interface{}, len(items))
+		for i, item := range items {
+			b, _ := json.Marshal(item)
+			var child RemoteValue
+			if err := json.Unmarshal(b, &child); err == nil {
+				result[i] = convertRemoteValue(child)
+			} else {
+				result[i] = item
+			}
+		}
+		return result
+	case "object":
+		pairs, ok := rv.Value.([]interface{})
+		if !ok {
+			return rv.Value
+		}
+		result := make(map[string]interface{})
+		for _, pair := range pairs {
+			kv, ok := pair.([]interface{})
+			if !ok || len(kv) != 2 {
+				continue
+			}
+			key, ok := kv[0].(string)
+			if !ok {
+				continue
+			}
+			b, _ := json.Marshal(kv[1])
+			var child RemoteValue
+			if err := json.Unmarshal(b, &child); err == nil {
+				result[key] = convertRemoteValue(child)
+			} else {
+				result[key] = kv[1]
+			}
+		}
+		return result
+	default:
+		return rv.Value
+	}
+}
+
