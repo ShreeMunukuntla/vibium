@@ -225,4 +225,3 @@ func convertRemoteValue(rv RemoteValue) interface{} {
 		return rv.Value
 	}
 }
-
