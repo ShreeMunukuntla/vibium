@@ -1206,7 +1206,12 @@ func (h *Handlers) browserEvaluate(args map[string]interface{}) (*ToolsCallResul
 	case nil:
 		resultText = "null"
 	default:
-		resultText = fmt.Sprintf("%v", v)
+		b, err := json.Marshal(v)
+		if err != nil {
+			resultText = fmt.Sprintf("%v", v)
+		} else {
+			resultText = string(b)
+		}
 	}
 
 	return &ToolsCallResult{
