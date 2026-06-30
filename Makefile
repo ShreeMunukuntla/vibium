@@ -203,6 +203,7 @@ test-cleanup:
 	@$(CURDIR)/clicker/bin/vibium$(EXE) daemon stop 2>/dev/null || true
 	@pkill -9 -f 'Chrome for Testing' 2>/dev/null || true
 	@pkill -9 -f 'chromedriver' 2>/dev/null || true
+	@pkill -9 -f 'sync-test-server.js' 2>/dev/null || true
 
 # Run CLI tests (tests the vibium binary directly)
 # Process tests run separately with --test-concurrency=1 to avoid interference
@@ -346,6 +347,7 @@ ifeq ($(OS),Windows_NT)
 else
 	@pkill -9 -f 'Chrome for Testing' 2>/dev/null || true
 	@pkill -9 -f chromedriver 2>/dev/null || true
+	@pkill -9 -f 'sync-test-server.js' 2>/dev/null || true
 endif
 	@sleep 1
 	@echo "Done."
