@@ -115,3 +115,42 @@ describe('CLI: --timeout flag formats', () => {
     fs.rmSync(tmpFile, { force: true });
   });
 });
+
+describe('CLI: fillable input types', () => {
+  test('fill sets an input[type=range] value (regression: #188)', () => {
+    execSync(`${VIBIUM} content '<input type="range" id="s" min="0" max="10" value="5">'`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    const result = execSync(`${VIBIUM} fill "#s" "3"`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    assert.match(result, /Filled/, 'range should be fillable, not rejected as "not editable"');
+    const value = execSync(`${VIBIUM} eval 'document.getElementById("s").value'`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    assert.strictEqual(value.trim(), '3', 'range value should be set to 3');
+  });
+
+  test('fill still rejects a non-fillable input type (checkbox)', () => {
+    execSync(`${VIBIUM} content '<input type="checkbox" id="cb">'`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    assert.throws(
+      () => {
+        // --timeout before the positionals (fill uses SetInterspersed(false));
+        // 1s so the expected failure returns quickly instead of auto-waiting.
+        execSync(`${VIBIUM} fill --timeout 1s "#cb" "x"`, {
+          encoding: 'utf-8',
+          timeout: 10000,
+          stdio: 'pipe',
+        });
+      },
+      /not editable/i,
+      'checkbox should not be fillable'
+    );
+  });
+});
