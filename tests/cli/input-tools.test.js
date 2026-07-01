@@ -100,3 +100,22 @@ describe('CLI: Negative value flag parsing', () => {
     assert.match(value, /-2/, 'field value should actually be set to -2');
   });
 });
+
+describe('CLI: fill edge cases', () => {
+  test('fill "" clears an existing value (regression: #187)', () => {
+    execSync(`${VIBIUM} content '<input id="u" value="hello">'`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    const result = execSync(`${VIBIUM} fill "#u" ""`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    assert.match(result, /Filled/, 'fill "" should succeed, not error with "value is required"');
+    const value = execSync(`${VIBIUM} eval 'document.getElementById("u").value'`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+    assert.strictEqual(value.trim(), '', 'field should be cleared');
+  });
+});

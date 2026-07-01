@@ -2072,12 +2072,15 @@ func (h *Handlers) browserFill(args map[string]interface{}) (*ToolsCallResult, e
 	}
 	selector = h.resolveSelector(selector)
 
-	value, _ := args["value"].(string)
-	if value == "" {
+	// Distinguish an omitted value from an intentionally empty one: an empty
+	// string is a valid value that clears the field, so key off key presence,
+	// not emptiness.
+	value, hasValue := args["value"].(string)
+	if !hasValue {
 		// Fall back to "text" for backwards compatibility with MCP clients
-		value, _ = args["text"].(string)
+		value, hasValue = args["text"].(string)
 	}
-	if value == "" {
+	if !hasValue {
 		return nil, fmt.Errorf("value is required")
 	}
 
