@@ -43,7 +43,7 @@ endif
 # only fires when something has gone catastrophically wrong. A healthy
 # sequential test-js phase is ~6-10 minutes because Chrome launch is ~16s
 # per file on macOS (see clients/javascript/src/clicker/process.ts). For
-# faster iteration use JS_PARALLEL=4 (Makefile:189) which cuts wall time ~3x.
+# faster iteration bump JS_PARALLEL (default 3) to use more cores.
 TEST_TIMEOUT ?= 600
 TIMEOUT_CMD := node scripts/timeout.mjs $(TEST_TIMEOUT)
 
@@ -153,10 +153,13 @@ serve: build-go
 	./clicker/bin/vibium$(EXE) serve
 
 # Build everything and run all tests: make test
-# On Windows, run JS async/sync sequentially to avoid Chrome resource starvation
-# (each group spawns JS_PARALLEL Chrome instances; too many concurrent Chromes
-# causes screenshot timeouts). Other platforms run all 5 groups in parallel.
-ifeq ($(OS),Windows_NT)
+# test-js-sync runs OUTSIDE the parallel group on every platform. Each of
+# test-js-async/sync/python/java fans out to *_PARALLEL headless Chromes, and
+# running all of them at once over-subscribes the machine (~14 concurrent
+# browsers on a 12-core box), pushing cold Chrome launches past the client's
+# ready timeout and cascading into cancellations. Keeping test-js-sync separate
+# caps the peak; the *_PARALLEL defaults are tuned conservatively for the same
+# reason. Bump *_PARALLEL on machines with more cores/memory.
 test: build install-browser
 	@START_TIME=$$(date +%s); \
 	"$(MAKE)" test-cli test-cleanup && \
@@ -177,26 +180,6 @@ test: build install-browser
 		echo "--- Tests failed after $${MINS}m$${SECS}s ---"; \
 		exit $$EXIT; \
 	fi
-else
-test: build install-browser
-	@START_TIME=$$(date +%s); \
-	"$(MAKE)" test-cli test-cleanup && \
-	"$(MAKE)" test-js-process test-cleanup && \
-	"$(MAKE)" -j 5 test-js-async test-js-sync test-mcp test-python test-java; \
-	EXIT=$$?; \
-	"$(MAKE)" test-cleanup; \
-	END_TIME=$$(date +%s); \
-	ELAPSED=$$((END_TIME - START_TIME)); \
-	MINS=$$((ELAPSED / 60)); \
-	SECS=$$((ELAPSED % 60)); \
-	echo ""; \
-	if [ $$EXIT -eq 0 ]; then \
-		echo "--- All tests passed in $${MINS}m$${SECS}s ---"; \
-	else \
-		echo "--- Tests failed after $${MINS}m$${SECS}s ---"; \
-		exit $$EXIT; \
-	fi
-endif
 
 # Kill any Chrome/chromedriver processes left over from tests
 test-cleanup:
@@ -231,7 +214,7 @@ test-cli: build-go
 # parallel-safe groups concurrently with test-mcp/test-python/test-java via
 # `$(MAKE) -j 5`. The process group must run alone because it asserts on
 # Chrome PID baselines.
-JS_PARALLEL ?= 4
+JS_PARALLEL ?= 3
 
 test-js-async: build-go
 	@echo "--- JS Async Tests (parallel x$(JS_PARALLEL)) ---"
@@ -296,7 +279,7 @@ test-daemon: build-go
 # for faster CI. Module-scoped browser fixture means xdist's default
 # loadfile distribution gives each file to a single worker — safe under
 # parallel since each file owns its own browser via conftest.py.
-PY_PARALLEL ?= 4
+PY_PARALLEL ?= 3
 test-python: build-go install-browser
 	@echo "--- Python Client Tests (parallel x$(PY_PARALLEL)) ---"
 	@cd clients/python && \
@@ -317,7 +300,7 @@ build-java: build-go
 # Run Java client tests
 # JAVA_PARALLEL: number of parallel test JVMs (each spawns its own Chrome).
 # Default 4; bump for faster CI on machines with more memory.
-JAVA_PARALLEL ?= 4
+JAVA_PARALLEL ?= 3
 test-java: build-go install-browser
 	@echo "--- Java Client Tests (parallel x$(JAVA_PARALLEL)) ---"
 	cd clients/java && VIBIUM_BIN_PATH=$(CURDIR)/clicker/bin/vibium$(EXE) ./gradlew test -PjavaParallel=$(JAVA_PARALLEL)
